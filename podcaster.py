@@ -14,7 +14,6 @@ import audioread
 
 DOWNLOAD_Q = Queue()
 PARSE_Q = Queue()
-EXIT = threading.Event()
 
 DB = sqlite3.connect('radiot.db')
 
@@ -23,28 +22,37 @@ def download_episode_worker():
 		task = DOWNLOAD_Q.get()
 		url = task['url']
 		print 'Download: %s' % url
-		r = requests.get(url, stream=True)
-		with open('podcasts/%s' % url.split('/')[-1], 'w+') as f:
-			for chunk in r.iter_content(chunk_size=4096):
-				if chunk:
-					f.write(chunk)
-					f.flush()
+		try:
+			r = requests.get(url, stream=True)
+			with open('podcasts/%s' % url.split('/')[-1], 'w+') as f:
+				for chunk in r.iter_content(chunk_size=4096):
+					if chunk:
+						f.write(chunk)
+						f.flush()
+		except:
+			print "downloading episode %s failed" % url
+			continue
 		task['file'] = 'podcasts/%s' % url.split('/')[-1]
 		print 'Complete downloading: %s' % url
 		PARSE_Q.put(task)
-	print "Set exit event"
-	EXIT.set()
+	print "Exit download worker"
 
 
 def parse_mp3():
-	while not (EXIT.is_set() and PARSE_Q.empty()):
+	while True:
+		if PARSE_Q.empty() and threading.active_count() == 1:
+			print "Finish parse feed"
+			return
 		if PARSE_Q.empty():
 			time.sleep(3)
 			continue
 		task = PARSE_Q.get()
 		print 'Parse %s' % task['file']
-		with audioread.audio_open(task['file']) as mp3:
-			task['duration'] = int(mp3.duration)
+		try:
+			with audioread.audio_open(task['file']) as mp3:
+				task['duration'] = int(mp3.duration)
+		except:
+			continue
 		save_result(task)
 
 
@@ -62,12 +70,14 @@ def save_result(task):
 	)
 	DB.commit()
 	cursor.close()
+	os.remove(task['file'])
 
 
 def parse_feed(feed):
 	with open(feed, 'r') as f:
 		tree = etree.XML(f.read())
 	items = tree.xpath('//item')
+	print "In feed %s episodes" % len(items)
 	for item in items:
 		podcast = {}
 		for opt in ('title', 'link', 'pubDate',
@@ -96,7 +106,7 @@ def main():
 	parse_feed('podcast_feed.xml')
 	if not os.path.isdir('podcasts'):
 		os.mkdir('podcasts')
-	for i in range(5):
+	for i in range(10):
 		t = threading.Thread(target=download_episode_worker)
 		t.start()
 	parse_mp3()
